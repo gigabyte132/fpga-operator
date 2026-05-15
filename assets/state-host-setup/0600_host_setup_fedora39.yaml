@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: host-setup-fedora39-daemonset
+  namespace: "filled_by_operator"
+  labels:
+    app: host-setup
+spec:
+  selector:
+    matchLabels:
+      name: host-setup
+  template:
+    metadata:
+      labels:
+        name: host-setup
+    spec:
+      nodeSelector:
+        feature.node.kubernetes.io/system-os_release.ID: "fedora"
+        feature.node.kubernetes.io/system-os_release.VERSION_ID.major: "39"
+        feature.node.kubernetes.io/pci-1200_10ee.present: "true"
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 60
+      hostIPC: true
+      hostNetwork: true
+      hostPID: true
+      initContainers:
+        - name: init-xrt-xrm
+          image: "filed_by_operator"
+          imagePullPolicy: "filled_by_operator"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: host-lib-modules
+              mountPath: /lib/modules
+            - name: host-dev
+              mountPath: /dev
+            - name: host-sys
+              mountPath: /sys
+            - name: host-var
+              mountPath: /var
+        - name: init-card-flash
+          image: "filed_by_operator"
+          imagePullPolicy: "filled_by_operator"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: host-lib-modules
+              mountPath: /lib/modules
+            - name: host-dev
+              mountPath: /dev
+            - name: host-sys
+              mountPath: /sys
+            - name: host-var
+              mountPath: /var
+      containers:
+        - name: host-setup-fedora
+          image: "filed_by_operator"
+          imagePullPolicy: "filled_by_operator"
+          securityContext:
+            privileged: true
+          command:
+            - /bin/bash
+            - /host-setup/host_setup_pin.sh
+          volumeMounts:
+            - name: host-lib-modules
+              mountPath: /lib/modules
+            - name: host-dev
+              mountPath: /dev
+            - name: host-sys
+              mountPath: /sys
+            - name: host-var
+              mountPath: /var
+      volumes:
+        - name: host-lib-modules
+          hostPath:
+            path: /lib/modules
+        - name: host-dev
+          hostPath:
+            path: /dev
+        - name: host-sys
+          hostPath:
+            path: /sys
+        - name: host-var
+          hostPath:
+            path: /var

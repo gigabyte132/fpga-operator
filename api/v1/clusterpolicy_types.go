@@ -132,7 +132,7 @@ type DevicePluginSpec struct {
 
 type OsDistSetupSpec struct {
 	// OS distribution, eg. ubuntu, centos
-	// +kubebuilder:validation:Enum=ubuntu;centos;amzn;rhel
+	// +kubebuilder:validation:Enum=ubuntu;centos;amzn;rhel;fedora
 	OsId string `json:"osId"`
 
 	// OS major version, eg. 18, 20

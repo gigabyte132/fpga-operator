@@ -238,6 +238,7 @@ func preProcessDaemonSet(obj *appsv1.DaemonSet, ctrl ClusterPolicyController) er
 		"host-setup-al2-daemonset":           TransformHostSetup,
 		"host-setup-centos7-daemonset":       TransformHostSetup,
 		"host-setup-centos8-daemonset":       TransformHostSetup,
+		"host-setup-fedora39-daemonset":      TransformHostSetup,
 	}
 
 	t, ok := transformations[obj.Name]
@@ -572,8 +573,12 @@ func TransformHostSetup(obj *appsv1.DaemonSet, config *policyv1.ClusterPolicySpe
 
 		}
 		// set command args
-		obj.Spec.Template.Spec.Containers[0].Command = []string{"/bin/bash"}
-		obj.Spec.Template.Spec.Containers[0].Args = []string{"-c", "echo host_setup complete, please refer to logs from init containers for further steps; while true; do sleep 3600; done"}
+		// For fedora, leave the asset YAML's command unmodified so the main
+		// container can pin XRT modules via open fds.
+		if !strings.EqualFold(osDistSpec.OsId, "fedora") {
+			obj.Spec.Template.Spec.Containers[0].Command = []string{"/bin/bash"}
+			obj.Spec.Template.Spec.Containers[0].Args = []string{"-c", "echo host_setup complete, please refer to logs from init containers for further steps; while true; do sleep 3600; done"}
+		}
 		return nil
 	}
 

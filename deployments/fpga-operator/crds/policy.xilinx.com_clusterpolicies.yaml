@@ -374,6 +374,7 @@ spec:
                           - centos
                           - amzn
                           - rhel
+                          - fedora
                           type: string
                         osMajorVersion:
                           description: OS major version, eg. 18, 20

@@ -181,7 +181,7 @@ detect_xrt() {
             CURRENT_XRT_VERSION="NONE"
             echo "INFO: No XRT installation was found."
         fi
-    elif [[ "$CENTOS" == 1 ]]; then
+    elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then
         rpm -q xrt > /dev/null 2>&1
         if [[ $? == 0 ]]; then
             CURRENT_XRT_VERSION=`rpm -q xrt | cut -d'-' -f 2`
@@ -196,7 +196,7 @@ detect_xrt() {
 check_packages() {
     if [[ "$UBUNTU" == 1 ]]; then
         PACKAGE_INSTALL_INFO=`apt list --installed 2>/dev/null | grep "$PACKAGE_NAME" | grep "$PACKAGE_VERSION"`
-    elif [[ "$CENTOS" == 1 ]]; then
+    elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then
         PACKAGE_INSTALL_INFO=`yum list installed 2>/dev/null | grep "$PACKAGE_NAME" | grep "$PACKAGE_VERSION"`
     fi
 }
@@ -214,6 +214,8 @@ os_setup() {
         UBUNTU=1
     elif [[ "$OSVERSION" == "centos-7" ]] || [[ "$OSVERSION" == "rhel-7.8" ]]; then
         CENTOS=1
+    elif [[ "$OSVERSION" == "fedora-39" ]]; then
+        FEDORA=1
     else
         echo "ERROR: Unsupported OS detected. Exiting."
         exit 1
@@ -238,6 +240,7 @@ init() {
     XRM=1
     UBUNTU=0
     CENTOS=0
+    FEDORA=0
     cardLocArr=()
     cardTypeArr=()
     cardIndex=0
@@ -256,13 +259,64 @@ init() {
     WIZARD=0
 }
 
+load_xrt_kmod_fedora() {
+    if [[ "$FEDORA" != 1 ]]; then return 0; fi
+
+    local KVER=$(uname -r)
+    local SRC=/lib/modules-xrt
+
+    echo "STATUS: [Fedora] Loading prebuilt XRT kernel modules for $KVER"
+
+    if ! ls "$SRC"/xocl.ko >/dev/null 2>&1; then
+        echo "ERROR: No prebuilt xocl.ko at $SRC."
+        return 1
+    fi
+
+    local VERMAGIC=$(modinfo "$SRC"/xocl.ko 2>/dev/null | awk -F: '/^vermagic:/ {print $2}' | awk '{print $1}')
+    if [[ "$VERMAGIC" != "$KVER" ]]; then
+        echo "ERROR: xocl.ko vermagic '$VERMAGIC' != host kernel '$KVER'"
+        echo "       Rebuild image with --build-arg KERNELVERSION matching host kernel."
+        return 1
+    fi
+
+    if lsmod | grep -q '^xocl '; then
+        echo "STATUS: xocl already loaded; skipping insmod."
+    else
+        echo "STATUS: insmod $SRC/xocl.ko"
+        insmod "$SRC"/xocl.ko || {
+            echo "ERROR: insmod xocl.ko failed"
+            dmesg | tail -30
+            return 1
+        }
+    fi
+
+    if [[ -f "$SRC"/xclmgmt.ko ]]; then
+        if lsmod | grep -q '^xclmgmt '; then
+            echo "STATUS: xclmgmt already loaded; skipping insmod."
+        else
+            echo "STATUS: insmod $SRC/xclmgmt.ko"
+            insmod "$SRC"/xclmgmt.ko || echo "WARNING: insmod xclmgmt.ko failed"
+        fi
+    fi
+
+    echo "STATUS: Loaded modules:"
+    lsmod | grep -E '^xocl|^xclmgmt' || { echo "ERROR: no XRT modules visible after insmod"; return 1; }
+
+    # Note: the main container of the daemonset re-loads modules itself and pins
+    # them by holding open fds for the pod's lifetime. The init container's
+    # insmod here is a "warmup" — useful so XRT install can complete, but the
+    # actual lifecycle binding lives in the main container.
+
+    return 0
+}
+
 setup() {
     os_setup
     lspci > /dev/null
     if [ $? != 0 ] ; then
         if [[ "$UBUNTU" == 1 ]]; then
             apt-get -qq install -y pciutils
-        elif [[ "$CENTOS" == 1 ]]; then
+        elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then
             yum install -q -y pciutils
         fi
     fi
@@ -271,7 +325,7 @@ setup() {
     if [ $? != 0 ] ; then
         if [[ "$UBUNTU" == 1 ]]; then
             apt-get -qq install -y wget
-        elif [[ "$CENTOS" == 1 ]]; then
+        elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then
             yum install -q -y wget
         fi
     fi
@@ -281,7 +335,7 @@ setup() {
         if [ $? != 0 ] ; then
             apt-get -qq install -y linux-headers-$(uname -r)
         fi
-    elif [[ "$CENTOS" == 1 ]]; then
+    elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then
         ls /usr/src/kernels/$(uname -r) > /dev/null
         if [ $? != 0 ] ; then
             yum install -q -y kernel-devel-$(uname -r)
@@ -317,7 +371,7 @@ multiple_xrt() {
                         apt install -y python3-pip
                         pip3 install --upgrade pip
                         pip3 install pyopencl==2020.1
-                    elif [[ "$CENTOS" == 1 ]]; then
+                    elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then
                         yum install -q -y epel-release
                     fi
                     echo "STATUS: Installing XRT Version: $XRT_PACKAGE."
@@ -332,16 +386,16 @@ multiple_xrt() {
 remove_xrt() {
     if [[ "$YES" == 1 ]]; then
         if [[ "$UBUNTU" == 1 ]]; then dpkg -r xrt
-        elif [[ "$CENTOS" == 1 ]]; then yum -q remove xrt; fi
+        elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then yum -q remove xrt; fi
     else
         while true; do
             read -p "CHECK: Remove XRT with dependencies? [Y/N]: " yn
             case $yn in
                 [Yy]* ) if [[ "$UBUNTU" == 1 ]]; then dpkg -r xrt
-                        elif [[ "$CENTOS" == 1 ]]; then yum -q remove xrt; fi
+                        elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then yum -q remove xrt; fi
                         break;;
                 [Nn]* ) if [[ "$UBUNTU" == 1 ]]; then dpkg -r --force-depends xrt
-                        elif [[ "$CENTOS" == 1 ]]; then rpm -e --nodeps xrt; fi
+                        elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then rpm -e --nodeps xrt; fi
                         break;;
                 * ) echo "INFO: Please answer Y or N.";;
             esac
@@ -350,7 +404,7 @@ remove_xrt() {
 
     if [[ "$UBUNTU" == 1 ]]; then
         apt-get -qq install -y $XRT_LOC
-    elif [[ "$CENTOS" == 1 ]]; then 
+    elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then 
         yum install -q -y $XRT_LOC
     fi
 }
@@ -360,10 +414,10 @@ version_compare_install() {
     XRT_VERSION_COMP=`$XRT_VERSION | tr -d .`
     if [[ "$CURRENT_XRT_VERSION_COMP" < "$XRT_VERSION_COMP" ]]; then
         if [[ "$UBUNTU" == 1 ]]; then apt-get -qq install -y $XRT_LOC
-        elif [[ "$CENTOS" == 1 ]]; then yum install -q -y $XRT_LOC; fi
+        elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then yum install -q -y $XRT_LOC; fi
     elif [[ "$CURRENT_XRT_VERSION_COMP" > "$XRT_VERSION_COMP" ]]; then
         if [[ "$UBUNTU" == 1 ]]; then apt-get --allow-downgrades install -y $XRT_LOC
-        elif [[ "$CENTOS" == 1 ]]; then yum downgrade -q -y $XRT_LOC; fi
+        elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then yum downgrade -q -y $XRT_LOC; fi
     fi
 }
 
@@ -380,7 +434,7 @@ flash_cards() {
         echo "STATUS: Installing Shell Package(s)."
         if [[ "$OSVERSION" == "ubuntu-16.04" || "$OSVERSION" == "ubuntu-18.04" || "$OSVERSION" == "ubuntu-20.04" || "$OSVERSION" == "ubuntu-22.04" ]]; then
             apt-get -qq install -y /tmp/xilinx*
-        elif [[ "$OSVERSION" == "centos-7" ]]; then
+        elif [[ "$OSVERSION" == "centos-7" || "$OSVERSION" == "fedora-39" ]]; then
             yum install -q -y /tmp/xilinx*
         fi
         rm /tmp/xilinx*
@@ -427,7 +481,7 @@ check_current_shell_version() {
                 rm /tmp/$SHELL_PACKAGE
                 if [[ "$UBUNTU" == 1 ]]; then
                     apt-get -qq install -y /tmp/xilinx*
-                elif [[ "$CENTOS" == 1 ]]; then
+                elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then
                     yum install -q -y /tmp/xilinx*
                 fi
                 rm /tmp/xilinx*
@@ -497,17 +551,21 @@ install_xrt() {
     elif [[ "$SKIP_XRT_OPTION" == 1 ]]; then
         return
     fi
-    
+
     # Original Flow Options
     if [[ "$LOCAL_XRT" != "NONE" ]]; then
         echo "STATUS: Installing XRT locally from $LOCAL_XRT."
         XRT_LOC=$LOCAL_XRT
         XRT_VERSION=`echo $LOCAL_XRT | rev | cut -d'/' -f 1 | rev | cut -d'_' -f 2`
+    elif [[ -f /packages/$XRT_PACKAGE ]]; then
+        echo "STATUS: Using locally-built XRT package /packages/$XRT_PACKAGE"
+        cp /packages/$XRT_PACKAGE /tmp/$XRT_PACKAGE
+        XRT_LOC=`echo /tmp/$XRT_PACKAGE`
     else
         echo "STATUS: Downloading XRT ($XRT_VERSION) installation package."
         wget -q -cO - "https://www.xilinx.com/bin/public/openDownload?filename=$XRT_PACKAGE" > /tmp/$XRT_PACKAGE
         XRT_LOC=`echo /tmp/$XRT_PACKAGE`
-    fi    
+    fi
 
     # XRT Installation
     if [[ "$CURRENT_XRT_VERSION" == "NONE" ]]; then
@@ -515,11 +573,13 @@ install_xrt() {
         if [[ "$UBUNTU" == 1 ]]; then
             apt-get -qq update -y
             apt-get -qq install -y python3-pip
-            pip3 install --upgrade pip 
+            pip3 install --upgrade pip
             pip3 install pyopencl==2020.1
-            apt-get -qq install -y --reinstall $XRT_LOC      
-        elif [[ "$CENTOS" == 1 ]]; then
-            yum install -q -y epel-release
+            apt-get -qq install -y --reinstall $XRT_LOC
+        elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then
+            if [[ "$FEDORA" != 1 ]]; then
+                yum install -q -y epel-release
+            fi
             yum install -q -y $XRT_LOC
         fi
     elif [[ "$CURRENT_XRT_VERSION" != "$XRT_VERSION" ]]; then
@@ -639,12 +699,14 @@ install_xrm() {
     wget -q -cO - "https://www.xilinx.com/bin/public/openDownload?filename=$XRM_PACKAGE" > /tmp/$XRM_PACKAGE
         if [[ "$UBUNTU" == 1 ]]; then
             apt-get install -y -qq /tmp/$XRM_PACKAGE
-        elif [[ "$CENTOS" == 1 ]]; then
+        elif [[ "$CENTOS" == 1 || "$FEDORA" == 1 ]]; then
             yum install -y -qq /tmp/$XRM_PACKAGE
         fi
 }
 
 default() {
+    load_xrt_kmod_fedora || { echo "ERROR: kmod load failed"; return 1; }
+    # ... rest of default() unchanged ...
     if [[ "$XRT" == 1 ]]; then
         echo "STATUS: Installing XRT."
         if [[ "$LOCAL_XRT" == "NONE" ]]; then

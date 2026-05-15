@@ -1,0 +1,32 @@
+ARG XRT_BRANCH=2025.2
+FROM almalinux:9 AS build
+ARG XRT_BRANCH
+
+RUN dnf install -y epel-release dnf-plugins-core \
+ && dnf config-manager --set-enabled crb \
+ && dnf install -y git rpm-build wget sudo which \
+                   make cmake gcc gcc-c++ pkgconfig perl \
+                   libdrm-devel libudev-devel systemd-devel \
+                   ncurses-devel libcurl-devel openssl-devel \
+                   protobuf-devel protobuf-compiler \
+                   rapidjson-devel python3-pybind11 \
+                   ocl-icd-devel opencl-headers \
+                   boost-devel \
+                   libuuid-devel elfutils-libelf-devel gtest-devel \
+                   glibc-static libstdc++-static \
+ && dnf clean all
+
+WORKDIR /tmp/build
+RUN git clone --depth 1 --branch ${XRT_BRANCH} https://github.com/Xilinx/XRT.git
+RUN ./XRT/src/runtime_src/tools/scripts/xrtdeps.sh || true
+RUN cd XRT/build && ./build.sh -opt -noert -noctest
+
+RUN mkdir /rpms \
+ && find XRT/build/Release -maxdepth 1 -name '*.rpm' \
+        ! -name '*aws*' ! -name '*azure*' \
+        -exec cp -v {} /rpms/ \; \
+ && ls -la /rpms/
+
+FROM almalinux:9
+COPY --from=build /rpms/ /packages/
+CMD ["sh", "-c", "ls -la /packages/"]

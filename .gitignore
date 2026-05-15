@@ -32,3 +32,10 @@ docs/_build
 docs/build
 docs/_themes
 docs/portal_scripts
+
+# local baks
+*.orig
+#logs
+*.log
+# locks
+*.lock

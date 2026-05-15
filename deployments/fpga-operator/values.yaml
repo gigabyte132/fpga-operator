@@ -19,16 +19,16 @@
 # Declare variables to be passed into your templates.
 
 nfd:
-  enabled: true
+  enabled: false
 operator:
-  repository: public.ecr.aws/xilinx_dcg
+  repository: registry.cern.ch/rchiores/fpga-operator
   image: fpga-operator
-  tag: latest
+  tag: fedora-support-10
   imagePullPolicy: IfNotPresent
   defaultRuntime: containerd
 containerRuntime:
   # install xilinx-container-runtime on host, and create a runtimeclass
-  enabled: true
+  enabled: false
   runtimeClass: xilinx
   setAsDefault: false
   repository: public.ecr.aws/xilinx_dcg
@@ -87,4 +87,14 @@ hostSetup:
       repository: public.ecr.aws/xilinx_dcg
       image: host-setup
       tag: centos7.9
+      imagePullPolicy: IfNotPresent
+    - osId: fedora
+      osMajorVersion: "39"
+      version: "2025.2"
+      xrmInstallation: false
+      shellFlashEnabled: false
+      cards: []
+      repository: registry.cern.ch/rchiores/fpga-operator
+      image: host-setup
+      tag: fedora39-06
       imagePullPolicy: IfNotPresent

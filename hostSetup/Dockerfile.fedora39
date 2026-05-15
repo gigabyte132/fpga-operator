@@ -1,0 +1,118 @@
+#
+# Copyright (C) 2024, Advanced Micro Devices, Inc. - All rights reserved
+# Apache 2.0
+#
+
+ARG KERNELVERSION=6.8.4-200
+ARG ARCHITECTURE=x86_64
+ARG DISTRO=fc39
+ARG XRT_BRANCH=2025.2
+
+# ---------- Stage 1: build XRT RPMs + kmods against fc39 + 6.8.4-200 ----------
+FROM fedora:39 AS build
+
+ARG KERNELVERSION
+ARG ARCHITECTURE
+ARG DISTRO
+ARG XRT_BRANCH
+
+RUN dnf install -y koji git rpm-build wget sudo which \
+                   make cmake gcc gcc-c++ pkgconfig perl \
+ && dnf clean all
+
+WORKDIR /tmp/build
+
+RUN koji download-build --arch=${ARCHITECTURE} --arch=noarch \
+        kernel-${KERNELVERSION}.${DISTRO} \
+ && dnf install -y \
+        kernel-devel-${KERNELVERSION}.${DISTRO}.${ARCHITECTURE}.rpm \
+        kernel-${KERNELVERSION}.${DISTRO}.${ARCHITECTURE}.rpm \
+        kernel-core-${KERNELVERSION}.${DISTRO}.${ARCHITECTURE}.rpm \
+        kernel-modules-${KERNELVERSION}.${DISTRO}.${ARCHITECTURE}.rpm \
+        kernel-modules-core-${KERNELVERSION}.${DISTRO}.${ARCHITECTURE}.rpm
+
+# Shim uname so `uname -r` returns the kernel we installed, not the docker
+# host's. The xocl Makefile does `KERNELDIR ?= /lib/modules/$(shell uname -r)/build`,
+# and that path only exists for the kernel we koji-installed.
+RUN printf '#!/bin/bash\nif [ "$1" = "-r" ]; then echo "%s"; else /usr/bin/uname "$@"; fi\n' \
+        "${KERNELVERSION}.${DISTRO}.${ARCHITECTURE}" > /usr/local/bin/uname \
+ && chmod +x /usr/local/bin/uname \
+ && /usr/local/bin/uname -r
+
+RUN git clone --depth 1 --branch ${XRT_BRANCH} https://github.com/Xilinx/XRT.git
+RUN ./XRT/src/runtime_src/tools/scripts/xrtdeps.sh
+
+# Backfill packages that xrtdeps.sh's fedora codepath misses on F39
+RUN dnf install -y libdrm-devel libudev-devel systemd-devel \
+                   ncurses-devel libcurl-devel openssl-devel \
+                   protobuf-devel protobuf-compiler \
+                   rapidjson-devel python3-pybind11 \
+                   ocl-icd-devel opencl-headers \
+                   boost-devel \
+                   libuuid-devel elfutils-libelf-devel gtest-devel \
+                   glibc-static libstdc++-static
+
+# Userspace + driver. No -kernel_dir (doesn't exist); the uname shim above
+# routes the driver build to the right kernel-devel.
+# -noert: no Vitis/MicroBlaze, -noctest: skip tests that need openssl CLI
+RUN cd XRT/build && ./build.sh -opt -driver -noert -noctest
+
+# After the existing RUN cd XRT/build && ./build.sh ... line, add:
+
+# Stock XRT ships prebuilt ERT firmware (MicroBlaze code, distro-agnostic).
+# Pull it from the official Xilinx 2025.2 release for Ubuntu 22.04 (any
+# distro works — the binary firmware blobs are identical).
+RUN mkdir -p /tmp/ert-fw \
+ && cd /tmp/ert-fw \
+ && wget -q -O xrt-stock.deb \
+      "https://www.xilinx.com/bin/public/openDownload?filename=xrt_202520.2.20.0_22.04-amd64-xrt.deb" \
+ && ls -la xrt-stock.deb \
+ && dnf install -y binutils \
+ && ar x xrt-stock.deb \
+ && tar xf data.tar.* \
+ && find . -path '*share/fw*' -name '*.bin' -exec ls -la {} \; \
+ && mkdir -p /tmp/share-fw \
+ && cp -v opt/xilinx/xrt/share/fw/*.bin /tmp/share-fw/ \
+ && rm -rf xrt-stock.deb data.tar.* control.tar.* debian-binary opt usr
+
+# Collect the userspace RPMs
+RUN mkdir /tmp/rpms \
+ && find XRT/build/Release -maxdepth 1 -name '*.rpm' \
+        ! -name '*aws*' ! -name '*azure*' \
+        -exec cp -v {} /tmp/rpms/ \; \
+ && ls -la /tmp/rpms/
+
+# Collect the prebuilt kernel modules. build.sh -driver leaves them as bare
+# .ko files in the source tree rather than packaging them into a kmod RPM,
+# so we have to find and stage them ourselves.
+RUN mkdir /tmp/modules \
+ && find XRT/build -name 'xocl.ko' -exec cp -v {} /tmp/modules/ \; \
+ && find XRT/build -name 'xclmgmt.ko' -exec cp -v {} /tmp/modules/ \; \
+ && ls -la /tmp/modules/ \
+ && modinfo /tmp/modules/xocl.ko | grep vermagic
+
+# ---------- Stage 2: same shape as the upstream centos7 image ----------
+FROM fedora:39
+
+RUN dnf -y update \
+ && dnf install -y wget pciutils kmod tar gzip procps-ng \
+ && mkdir -p /packages \
+ && dnf clean all
+
+WORKDIR /host-setup
+
+COPY host_setup.sh host_setup.sh 
+COPY host_setup_pin.sh host_setup_pin.sh
+COPY xrm_setup.sh xrm_setup.sh
+RUN chmod +x host_setup.sh xrm_setup.sh host_setup_pin.sh
+COPY prompts/PROMPT_fedora39.txt PROMPT.txt
+COPY conf/ conf/
+
+# Userspace RPMs that host_setup.sh consumes via /packages/ fallback in install_xrt()
+COPY --from=build /tmp/rpms/ /packages/
+COPY --from=build /tmp/share-fw/ /lib/firmware-xrt/
+
+# Prebuilt xocl.ko / xclmgmt.ko that load_xrt_kmod_fedora() consumes
+# from host_setup.sh. Lives at /lib/modules-xrt/ so it doesn't pollute
+# the container's own /lib/modules/.
+COPY --from=build /tmp/modules/ /lib/modules-xrt/

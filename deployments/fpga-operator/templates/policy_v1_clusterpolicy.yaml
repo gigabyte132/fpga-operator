@@ -29,9 +29,7 @@ spec:
   containerRuntime:
     # install xilinx-container-runtime on host, and create a runtimeclass
     # default true
-    {{- if .Values.containerRuntime.enabled }}
     enabled: {{ .Values.containerRuntime.enabled }}
-    {{- end }}
     # default 'xilinx'
     {{- if .Values.containerRuntime.runtimeClass }}
     runtimeClass: {{ .Values.containerRuntime.runtimeClass }}
